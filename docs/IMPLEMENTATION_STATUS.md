@@ -10,14 +10,14 @@
 ```
 ✅ 阶段 0  生成项目 + 清理示例 + 搭建 apps/web 骨架
 ✅ 阶段 1  共享契约 + 数据模型 + resume-kit 渲染器包
-🔶 阶段 2  简历服务 + 前台编辑器（服务端与接口已完整验证，前端四区块 UI 待补）
+✅ 阶段 2  简历服务 + 前台编辑器（服务端与前端均完成并验证）
 ⬜ 阶段 3  模板系统（schema 已定，模块未实现）
 ⬜ 阶段 4  AI 服务化
 ⬜ 阶段 5  导出与增强
 ```
 
-质量门禁全绿：`pnpm build` / `pnpm typecheck` / `pnpm lint` 均无错误，
-接口冒烟测试 18 项全部通过。
+质量门禁全绿：`pnpm build` / `pnpm typecheck` / `pnpm lint` 均无错误。
+验证合计 **85 项**全部通过（接口冒烟 18 + moveSection 16 + 旧版转换 24 + 导入端到端 27）。
 
 ---
 
@@ -203,16 +203,60 @@ pnpm lint        ✅ 0 warning 0 error
 
 ---
 
+## 阶段 2 补充说明（15:35 后完成）
+
+### 区块编辑做成配置驱动
+五个经历区块用 `SECTION_FIELDS: Record<section, FieldSpec[]>` 描述，字段名、
+是否整行、控件类型都是数据，而非四份几乎相同的 JSX。
+
+**每条独立防抖（600ms），元信息 800ms** —— 若共用一个计时器，在 A 条输入时会
+误提交 B 条的旧值。
+
+### 拖拽排序
+`moveSection` 抽到 shared 包做纯函数。关键点是**向下移动时插入点要 -1**
+（移除源项后目标位置前移），这是源项目 `useResumeStore.ts` 里最易写错的一行。
+
+交互沿用源项目 `resumeEdit.vue`：区块中线上下判定落前/落后 + 末尾独立投放区。
+实现上有一处改进：**只有左侧手柄可拖**，而非整块 —— 否则区块内的输入框会
+抢走拖拽手势。投放反馈用虚线描边而非移动 DOM（移动触发布局重排会抖动）。
+
+用原生 HTML5 DnD 而非 @dnd-kit：源项目已验证这套交互，区块级排序是低频操作，
+不需要键盘可访问性与排序动画。
+
+### 简历列表（源项目没有的能力）
+源项目的 `currentId` 只是 localStorage 里的自增计数器，全局只有一份简历，
+想换内容只能手工导出再导入。现在支持多份并存：新建/重命名/复制/删除。
+
+### 旧版数据导入
+`packages/shared/src/legacy.ts` 做 v1 -> v2 结构转换（五个独立数组 ->
+统一 `items:[{section,payload}]`）。核心取舍是**「宽松读入、严格输出」**：
+
+- 源数据字段缺失/类型不对/带遗留 id → 逐一清洗 + 收集 warnings，不抛错
+  （抛错会让用户什么都导不进来）
+- 设置项越界时**裁剪而非拒绝**（源项目滑块范围与 v2 略有差异，拒绝会丢数据）
+- `parseLegacyJson` 容忍 markdown 围栏 —— 用户常把 `console.log` 输出
+  连着 ```json 一起复制过来
+
+UI 走「预览 → 确认导入」两步，导入前显示会导入几条 + 会自动修正哪些问题。
+
+---
+
 ## 下一步
 
-阶段 2 剩余（按优先级）：
+### 阶段 2 遗留（都不影响主流程）
 
-1. **补齐编辑器区块** — 项目/工作/技能/荣誉四个区块的 UI（服务端接口已就绪，只差前端）
-2. **模块拖拽排序** — 复用源项目 `resumeEdit.vue` 的交互设计（前后位置判定 + 末尾投放区）
-3. **简历列表页** — 多份简历切换（源项目不支持，这是新能力）
-4. **导入迁移工具** — 引导用户从 `localStorage.resumeData` 导出后走 `POST /resumes/import`
+- **区块内部条目重排** —— 源项目 `views/resume/components/education.vue`
+  实现了条目级拖拽，当前只有区块级。服务端接口已就绪
+  （`PUT /resumes/:id/sections/:section/items`）
+- 模板选择 UI、简历预览面板
 
-阶段 3 起步前需确认：模板 schema 是否够用。现有 `TemplateBlock` 定义了 `variant`（default/timeline/two-column/compact/paragraph）与 `layout`（list/grid/inline），但渲染器目前只按 `section` 分发，`variant` 尚未真正生效——双栏模板的视觉差异还没实现。这是方案 A 的表达力边界，值得先跑通再决定是否需要 schema B（沙箱渲染）。
+### 阶段 3 起步前需确认
+
+模板 schema 是否够用。现有 `TemplateBlock` 定义了 `variant`
+（default/timeline/two-column/compact/paragraph）与 `layout`（list/grid/inline），
+但**渲染器目前只按 `section` 分发，`variant` 尚未真正生效** —— 双栏模板的
+视觉差异其实没实现。这是方案 A 的表达力边界，值得先跑通看够不够，
+不够再考虑方案 B（iframe 沙箱渲染）。
 
 ---
 
@@ -221,7 +265,7 @@ pnpm lint        ✅ 0 warning 0 error
 ```bash
 cd C:/Users/Administrator/Documents/Git/AIResume-v2
 
-pnpm dev# 并行起全部包（web 在 5174，web-admin 在 5173）
+pnpm dev                # 并行起全部包（web 在 5174，web-admin 在 5173）
 pnpm build                      # 全量构建
 pnpm typecheck                  # TS Project References 增量检查
 pnpm lint                       # oxlint
@@ -233,4 +277,10 @@ pnpm db:emit                    # 契约变更后重新生成 contract.json/.d.t
 pnpm migrate:create             # 生成迁移
 pnpm migrate:apply              # 应用迁移
 pnpm db:seed                    # 灌入种子用户 + 预置模板
+
+# 验证（都可重复跑）
+pnpm smoke:api                  # 18 项接口冒烟，需服务已启动
+pnpm verify:move-section        # 16 项拖拽排序纯函数
+pnpm verify:legacy-convert      # 24 项旧版数据转换
+pnpm verify:import-e2e          # 27 项导入端到端，需服务已启动
 ```
