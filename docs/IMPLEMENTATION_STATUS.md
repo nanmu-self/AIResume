@@ -10,14 +10,23 @@
 ```
 ✅ 阶段 0  生成项目 + 清理示例 + 搭建 apps/web 骨架
 ✅ 阶段 1  共享契约 + 数据模型 + resume-kit 渲染器包
-✅ 阶段 2  简历服务 + 前台编辑器（服务端与前端均完成并验证）
-⬜ 阶段 3  模板系统（schema 已定，模块未实现）
+✅ 阶段 2  简历服务 + 前台编辑器
+✅ 阶段 3  模板系统（渲染器 variant 落地 + 模板服务 + 四个模板还原）
 ⬜ 阶段 4  AI 服务化
 ⬜ 阶段 5  导出与增强
 ```
 
 质量门禁全绿：`pnpm build` / `pnpm typecheck` / `pnpm lint` 均无错误。
-验证合计 **85 项**全部通过（接口冒烟 18 + moveSection 16 + 旧版转换 24 + 导入端到端 27）。
+验证合计 **181 项**全部通过：
+
+| 脚本 | 项数 | 覆盖 |
+|---|---|---|
+| `pnpm smoke:api` | 18 | 简历接口冒烟 |
+| `pnpm verify:move-section` | 16 | 拖拽排序纯函数 |
+| `pnpm verify:legacy-convert` | 24 | 旧版数据转换 |
+| `pnpm verify:import-e2e` | 27 | 导入端到端 + 往返一致性 |
+| `pnpm verify:template-render` | 47 | 四模板渲染产物比对 |
+| `pnpm smoke:templates` | 29 | 模板接口 + 运营端 CRUD |
 
 ---
 
@@ -241,22 +250,81 @@ UI 走「预览 → 确认导入」两步，导入前显示会导入几条 + 会
 
 ---
 
-## 下一步
+---
 
-### 阶段 2 遗留（都不影响主流程）
+## 阶段 3 补充说明：模板差异不在 variant，而在标题样式
+
+原先以为四个模板的差异在区块 `variant`，逐个读
+`src/template/template{A,B,C,D}` 后发现**不是**：
+
+- 四个模板的 `variant` **全写 `default`**，区块内容都是纵向列表
+- 真正的差异三处：
+  1. **标题画法** —— A 纯文字 / B 左侧 4px 色条 / D 大写 + 后延伸细线 /
+     C 侧栏内反白填充
+  2. **是否双栏** —— 只有 C 是 `grid-template-columns: 280px 1fr`
+  3. **侧栏是否主色填充** —— 只有 C 是
+
+所以差异靠新增的 `titleStyle` + `sidebar` 表达。`variant` 里的
+timeline / inline / grid 渲染器实现了但**预置模板不启用** ——
+宁可不配，也不用一个看起来像时间轴但实际不是的版式。
+
+C 的侧栏还有个细节：个人信息改纵向堆叠、头像在上方（主栏内是左右分栏）。
+
+### 验证方式：SSR 渲染后比对 HTML
+
+`apps/web/scripts/render-templates.mjs` 用 `renderToStaticMarkup` 把四个模板
+渲染成静态 HTML，`verify-template-render.mjs` 47 项比对产物。
+
+**比对 HTML 比读代码可靠** —— 能发现「schema 配了但渲染器没读」这类问题。
+这轮就靠它抓到 `renderBlock` 缺 React key 的警告。
+
+### 模板接口的三个读法
+
+| 接口 | 用途 | 校验上架状态 |
+|---|---|---|
+| `GET /templates` | 前台列表（只返回已上架） | — |
+| `GET /templates/:slug` | 运营预览未上架模板 | 否 |
+| `GET /templates/:slug/render-schema` | 渲染器专用 | **是** |
+
+渲染器专用那条必须校验 —— 运营正在编辑的半成品不该被渲染给用户看。
+
+### 前端预览用实时渲染，不用静态图
+
+模板选择页的预览不用运营上传的 `preview_url`：
+- 静态图与用户内容无关，看不出「换模板后我的简历会怎样」
+- 静态图会与实际渲染结果漂移（模板改了图没更新）
+- 渲染器本就是纯函数组件，前端预览与服务端 PDF 导出走同一份代码
+
+缩放用 `transform: scale` 而非 `zoom` —— zoom 的换算各浏览器不一致，
+且会破坏 `position: fixed` 定位。
+
+---
+
+## 待补与下一步
+
+### 遗留（都不影响主流程）
 
 - **区块内部条目重排** —— 源项目 `views/resume/components/education.vue`
   实现了条目级拖拽，当前只有区块级。服务端接口已就绪
   （`PUT /resumes/:id/sections/:section/items`）
-- 模板选择 UI、简历预览面板
+- **运营后台的模板管理页** —— 后端接口齐了（`/admin/templates`），
+  但 web-admin 里还没有对应的页面与导航项
+- ⚠️ **`/admin/templates` 目前只挂了 JwtAuthGuard，任何登录用户都能调**，
+  上线前必须补 RolesGuard + admin 角色校验
 
-### 阶段 3 起步前需确认
+### 阶段 4：AI 服务化
 
-模板 schema 是否够用。现有 `TemplateBlock` 定义了 `variant`
-（default/timeline/two-column/compact/paragraph）与 `layout`（list/grid/inline），
-但**渲染器目前只按 `section` 分发，`variant` 尚未真正生效** —— 双栏模板的
-视觉差异其实没实现。这是方案 A 的表达力边界，值得先跑通看够不够，
-不够再考虑方案 B（iframe 沙箱渲染）。
+契约与服务端口已就位（`AiStreamChunk` 定义了四种帧类型、Vite proxy 已配
+SSE 关闭缓冲、`ai_sessions` / `ai_usages` 两张表已建），缺的是：
+- `ai` 服务端模块（prompt 收拢到服务端、tool call 解析、SSE 输出）
+- 大模型对接（provider 抽象 + 流式）
+- 前端深挖/面试的对话界面
+
+### 阶段 5：导出与增强
+
+- 服务端 Playwright 渲染导出 PDF（渲染器已就绪，是同构的）
+- 区块内部条目重排
+- 版本历史 / 导入导出增强
 
 ---
 
@@ -283,4 +351,7 @@ pnpm smoke:api                  # 18 项接口冒烟，需服务已启动
 pnpm verify:move-section        # 16 项拖拽排序纯函数
 pnpm verify:legacy-convert      # 24 项旧版数据转换
 pnpm verify:import-e2e          # 27 项导入端到端，需服务已启动
+pnpm verify:template-render     # 47 项模板渲染比对（自动生成 HTML 后验证）
+pnpm smoke:templates            # 29 项模板接口冒烟，需服务已启动
+pnpm render:templates           # 只生成四个模板的静态 HTML 到 tmp/templates
 ```
