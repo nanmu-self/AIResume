@@ -12,7 +12,7 @@
 ✅ 阶段 1  共享契约 + 数据模型 + resume-kit 渲染器包
 ✅ 阶段 2  简历服务 + 前台编辑器
 ✅ 阶段 3  模板系统（渲染器 variant 落地 + 模板服务 + 四个模板还原）
-⬜ 阶段 4  AI 服务化
+✅ 阶段 4  AI 服务化（provider 抽象 + tool call + SSE + 前端对话页）
 ⬜ 阶段 5  导出与增强
 ```
 
@@ -27,6 +27,8 @@
 | `pnpm verify:import-e2e` | 27 | 导入端到端 + 往返一致性 |
 | `pnpm verify:template-render` | 47 | 四模板渲染产物比对 |
 | `pnpm smoke:templates` | 29 | 模板接口 + 运营端 CRUD |
+| `pnpm smoke:ai` | 25 | AI 接口（真实打SenseNova，需服务已起） |
+| `pnpm verify:sse-client` | 25 | SSE 客户端解析（tsx 跑真实源码） |
 
 ---
 
@@ -312,18 +314,80 @@ C 的侧栏还有个细节：个人信息改纵向堆叠、头像在上方（主
 - ⚠️ **`/admin/templates` 目前只挂了 JwtAuthGuard，任何登录用户都能调**，
   上线前必须补 RolesGuard + admin 角色校验
 
-### 阶段 4：AI 服务化
+### 阶段 4：AI 服务化（已完成）
 
-契约与服务端口已就位（`AiStreamChunk` 定义了四种帧类型、Vite proxy 已配
-SSE 关闭缓冲、`ai_sessions` / `ai_usages` 两张表已建），缺的是：
-- `ai` 服务端模块（prompt 收拢到服务端、tool call 解析、SSE 输出）
-- 大模型对接（provider 抽象 + 流式）
-- 前端深挖/面试的对话界面
+契约与服务端口此前已就位（`AiStreamChunk` 四种帧类型、Vite proxy 已配
+SSE 关闭缓冲、`ai_sessions` / `ai_usages` 两张表已建），本阶段补齐实现。
 
-### 阶段 5：导出与增强
+**大模型**：SenseNova（`sensenova-6.8-flash-lite`），OpenAI 兼容协议。
+不引 SDK，直接 fetch —— 一套代码覆盖 OpenAI / DeepSeek / 通义 / Moonshot /
+Ollama，换厂商只改 baseURL。tool call 与流式均实测可用。
 
-- 服务端 Playwright 渲染导出 PDF（渲染器已就绪，是同构的）
-- 区块内部条目重排
+**三个核心设计**（相对源项目）：
+
+1. **tool call 替代正则约定** —— 源项目靠 ` ```resume ``` ` 这类 markdown
+   包裹约定输出格式，模型不配合就静默失效；tool call 由 API 层保证结构。
+   流式下 tool_call 是**增量拼接**的（首帧给 name，后续帧给 arguments 片段），
+   provider 里按 index 累积
+2. **prompt 全部收拢到服务端** —— 源项目写在前端组件里，随包发布、用户可见可改。
+   现在前端只传业务参数
+3. **会话持久化到数据库** —— 源项目只存内存，刷新即丢、无法多端续聊。
+   归属校验沿用 404 而非 403
+
+**未配置时的降级**：三个 AI 环境变量全空 = AI 功能禁用，
+服务正常启动，相关接口返 503。沿用七牛的策略——
+可选功能不该阻止服务启动。部分配置则拒绝启动（少配 model
+会让每次调用都以 500 失败）。
+
+#### 三个实测才发现的 bug
+
+1. **`choices[0].delta` 少读一层嵌套**
+   真实结构是 `{ choices: [{ index, delta: {...}, finish_reason }] }`，
+   我把类型定义写成 `{ content? }` 少了 `delta` 这层。
+   **症状极具误导性：流能通、usage 帧也收到，但一条 delta 都没有**——
+   usage 在 chunk 顶层不经过 choices，它的存在让人以为解析是通的。
+   排查时在 provider 里打 `Object.keys(chunk.choices[0])` 就能看出来。
+
+2. **controller 没消费 `frames` 字段**
+   service 已改成返回完整帧序列，但 controller 那行
+   `wrapFrames([reply])` 的批量替换没匹配上（注释文字有差异），
+   frames 返回了却没人用，首轮仍只发 1 帧。
+
+3. **`filter(f => f.type !== 'done')` 把结束信号过滤掉了**
+   done 帧是前端判断「本轮结束」的依据，漏掉会一直等下去。
+
+另外 `@Post()` + `@Sse()` 默认返 **201**（Nest 对非 GET 方法的默认），
+SSE 语义上应是 200，需显式 `@HttpCode(200)`。
+
+#### 兼容推理模型的 `delta.reasoning`
+
+deepseek-v3/v4、SenseNova、GLM 等推理模型的回答分两段：
+前 N 帧是 `reasoning`（思考），之后才是 `content`。
+只读 `content` 在短回答上看着正常，**长回答会因思考耗尽
+`max_tokens` 而只有 reasoning 没有 content** —— 看起来一样是空的。
+
+#### 前端 SSE 客户端：拆成独立文件是必要决定
+
+`readSseStream` 原本和 HTTP 客户端放在同一个文件，测它必须先 mock
+整个 vite 运行环境（`import.meta.env` 在 Node 下直接抛错）。
+拆到 `apps/web/src/lib/sse.ts` 后是纯函数，用 tsx 直接 import 就能测——
+测的是**实际运行的那份代码**而非复制品。
+
+三个要点：
+
+| 要点 | 处理 |
+|---|---|
+| 缓冲残留 | `parts.pop()` 把不完整的最后一块留到下一轮；流结束后再 `decoder.decode()` 一次（还压着半个多字节字符） |
+| 多字节字符 | `TextDecoder` 必须 `{ stream: true }`，否则跨 chunk 的中文/emoji 变乱码 |
+| 三层 data 兼容 | 用 `type` 字段探测而非无条件解包——单层时 `{ data: {...} }` 的 type 是 undefined，会被 `if (frame?.type)` 静默丢弃 |
+
+最后一个 bug 是**验证脚本测出来的，不是想出来的**。
+
+### 阶段 5：导出与增强（待做）
+
+- 服务端 PDF 导出（渲染器是纯函数组件，同构可复用）
+- 区块内部条目重排（源项目有，当前只有区块级）
+- 单条润色的前端入口（`POST /ai/polish` 已就绪，编辑器里还没接）
 - 版本历史 / 导入导出增强
 
 ---
@@ -354,4 +418,6 @@ pnpm verify:import-e2e          # 27 项导入端到端，需服务已启动
 pnpm verify:template-render     # 47 项模板渲染比对（自动生成 HTML 后验证）
 pnpm smoke:templates            # 29 项模板接口冒烟，需服务已启动
 pnpm render:templates           # 只生成四个模板的静态 HTML 到 tmp/templates
+pnpm smoke:ai                   # 25 项 AI 接口冒烟，需服务已启动且配了大模型
+pnpm verify:sse-client          # 25 项 SSE 客户端解析（tsx 跑真实源码，无需服务）
 ```
